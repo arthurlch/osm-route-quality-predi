@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional
 import logging
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
@@ -115,9 +115,7 @@ def evaluate_model(model: Pipeline,
         except Exception as e:
             logger.warning(f"Could not extract feature importances: {e}")
 
-    # Generate ROC curve if probabilities are available ...
     if y_prob is not None:
-        # ROC curve
         fpr, tpr, _ = roc_curve(y_test, y_prob)
         roc_auc = auc(fpr, tpr)
 
@@ -138,14 +136,12 @@ def evaluate_model(model: Pipeline,
         logger.info(f"Saved: {roc_path}")
 
         precision, recall, _ = precision_recall_curve(y_test, y_prob)
-
         plt.figure(figsize=(8, 6))
         plt.plot(recall, precision, color='blue', lw=2)
         plt.xlabel('Recall')
         plt.ylabel('Precision')
         plt.title('Precision-Recall Curve')
 
-        # Save Precision-Recall curve
         pr_path = os.path.join(
             output_dir, f"{prefix}precision_recall_curve.png")
         plt.savefig(pr_path)
@@ -154,40 +150,10 @@ def evaluate_model(model: Pipeline,
 
         metrics['roc_auc'] = roc_auc
 
-        thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-        threshold_metrics = {}
-
-        for t in thresholds:
-            y_pred_t = (y_prob >= t).astype(int)
-            threshold_metrics[t] = {
-                'accuracy': accuracy_score(y_test, y_pred_t),
-                'f1': f1_score(y_test, y_pred_t),
-                'precision': precision_score(y_test, y_pred_t),
-                'recall': recall_score(y_test, y_pred_t)
-            }
-
-        plt.figure(figsize=(10, 6))
-        for metric in ['accuracy', 'f1', 'precision', 'recall']:
-            values = [threshold_metrics[t][metric] for t in thresholds]
-            plt.plot(thresholds, values, marker='o', label=metric)
-
-        plt.xlabel('Threshold')
-        plt.ylabel('Score')
-        plt.title('Performance Metrics vs. Classification Threshold')
-        plt.legend()
-        plt.grid(True)
-
-        threshold_path = os.path.join(
-            output_dir, f"{prefix}threshold_analysis.png")
-        plt.savefig(threshold_path)
-        plt.close()
-        logger.info(f"Saved: {threshold_path}")
-
-        metrics['threshold_analysis'] = threshold_metrics
-
     import json
+    metrics_path = os.path.join(output_dir, f"{prefix}evaluation_metrics.json")
 
-    def convert_to_json_serializable(obj):
+    def json_serialize(obj):
         if isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64,
                             np.uint8, np.uint16, np.uint32, np.uint64)):
             return int(obj)
@@ -196,29 +162,24 @@ def evaluate_model(model: Pipeline,
         elif isinstance(obj, (np.ndarray,)):
             return obj.tolist()
         elif isinstance(obj, dict):
-            return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+            return {k: json_serialize(v) for k, v in obj.items()}
         elif isinstance(obj, list):
-            return [convert_to_json_serializable(i) for i in obj]
+            return [json_serialize(i) for i in obj]
         else:
             return obj
 
-    serializable_metrics = convert_to_json_serializable(metrics)
-
-    # Save metrics to JSON
-    metrics_path = os.path.join(output_dir, f"{prefix}evaluation_metrics.json")
     with open(metrics_path, 'w') as f:
-        json.dump(serializable_metrics, f, indent=2)
+        json.dump(json_serialize(metrics), f, indent=2)
     logger.info(f"Saved metrics to: {metrics_path}")
 
     return metrics
 
 
 def cross_region_evaluation(model: Pipeline,
-                            test_regions: Dict[str, Tuple[pd.DataFrame, pd.Series]],
+                            test_regions: Dict[str, tuple],
                             output_dir: str = 'cross_region_eval') -> Dict[str, Dict[str, Any]]:
 
     os.makedirs(output_dir, exist_ok=True)
-
     results = {}
 
     for region_name, (X_test, y_test) in test_regions.items():
@@ -230,11 +191,9 @@ def cross_region_evaluation(model: Pipeline,
 
         metrics = evaluate_model(
             model, X_test, y_test, output_dir=region_dir, region_name=region_name)
-
         results[region_name] = metrics
 
     plt.figure(figsize=(12, 8))
-
     metrics = ['accuracy', 'precision', 'recall', 'f1_score']
     regions = list(results.keys())
 

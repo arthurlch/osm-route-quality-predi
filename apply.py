@@ -2,9 +2,11 @@ import os
 import pandas as pd
 import geopandas as gpd
 import numpy as np
-from typing import Tuple, Optional, Union, Dict, Any, List
+from typing import Tuple, Optional, Dict, Any, List
 from sklearn.pipeline import Pipeline
 import logging
+
+from .utils import load_network, extract_edges, STANDARD_FEATURES
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,36 +18,25 @@ def predict_quality_streets(model: Pipeline,
                             threshold: float = 0.5,
                             output_path: Optional[str] = None,
                             return_all: bool = False) -> gpd.GeoDataFrame:
+
+    logger.info(f"Predicting quality streets for {len(edges)} edges")
+
     df = edges.copy()
 
-    try:
-        if hasattr(model, 'named_steps') and 'preprocessor' in model.named_steps:
-            expected_features = []
-            for name, _ in model.named_steps['preprocessor'].transformers:
-                if name != 'remainder':
-                    try:
-                        transformer = model.named_steps['preprocessor'].named_transformers_[
-                            name]
-                        if hasattr(transformer, 'feature_names_in_'):
-                            expected_features.extend(
-                                transformer.feature_names_in_)
-                    except (AttributeError, KeyError) as e:
-                        logger.warning(
-                            f"Could not extract features from transformer '{name}': {e}")
+    features = []
 
-            features = [f for f in expected_features if f in df.columns]
-        else:
-            from .train import STANDARD_FEATURES
-            features = [c for c in STANDARD_FEATURES if c in df.columns]
-    except (AttributeError, KeyError) as e:
-        logger.warning(f"Error extracting features from model: {e}")
-        features = [c for c in ['highway', 'lanes', 'maxspeed', 'service', 'length', 'width']
-                    if c in df.columns]
+    if hasattr(model, '__getitem__') and isinstance(model, dict) and 'metadata' in model:
+        features = [f for f in model['metadata'].get(
+            'features', []) if f in df.columns]
+        model = model['model']  # Get actual model
+
+    if not features:
+        features = [f for f in STANDARD_FEATURES if f in df.columns]
 
     logger.info(f"Using features: {features}")
 
     for col in ['width', 'lanes', 'maxspeed', 'length']:
-        if col in df.columns:
+        if col in df.columns and col in features:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
     X = df[features]
@@ -84,28 +75,16 @@ def predict_quality_streets(model: Pipeline,
 def transfer_model(model_path: str,
                    new_region: str,
                    network_type: str = 'drive',
-                   output_dir: str = '.',
-                   adapter_type: Optional[str] = None,
-                   adapter_config: Optional[Dict[str, Any]] = None,
-                   calibration_data: Optional[gpd.GeoDataFrame] = None,
-                   threshold: float = 0.5) -> Tuple[gpd.GeoDataFrame, str]:
+                   output_dir: str = '.') -> Tuple[gpd.GeoDataFrame, str]:
 
-    from .utils import load_network, extract_edges
     from .train import load_model
 
-    # Load the model
     model, metadata = load_model(model_path)
     logger.info(
         f"Using model trained on {metadata.get('region', 'Unknown')} to predict quality streets in {new_region}")
 
-    if calibration_data is not None and not calibration_data.empty:
-        logger.info(
-            f"Calibrating model using {len(calibration_data)} known quality streets")
-        model = calibrate_model(model, calibration_data)
-
-    G = load_network(new_region, network_type, adapter_type, adapter_config)
-
-    edges = extract_edges(G, adapter_type, adapter_config)
+    G = load_network(new_region, network_type)
+    edges = extract_edges(G)
     logger.info(f"Extracted {len(edges)} edges from {new_region}")
 
     safe_region_name = new_region.replace(', ', '_').replace(' ', '_')
@@ -113,47 +92,22 @@ def transfer_model(model_path: str,
     output_path = os.path.join(
         output_dir, f"predicted_quality_{safe_region_name}_{timestamp}.csv")
 
-    # Make predictions
     quality_streets = predict_quality_streets(
-        model, edges, threshold=threshold, output_path=output_path)
+        model, edges, output_path=output_path)
 
     return quality_streets, output_path
-
-
-def calibrate_model(model: Pipeline,
-                    calibration_data: gpd.GeoDataFrame) -> Pipeline:
-
-    from sklearn.calibration import CalibratedClassifierCV
-
-    classifier = model.named_steps['classifier']
-
-    calibrated_classifier = CalibratedClassifierCV(
-        base_estimator=classifier,
-        cv='prefit',
-        method='sigmoid'
-    )
-
-    model.named_steps['classifier'] = calibrated_classifier
-
-    logger.info("Model calibrated for the new region")
-    return model
 
 
 def apply_ensemble(model_paths: List[str],
                    new_region: str,
                    network_type: str = 'drive',
                    output_dir: str = '.',
-                   adapter_type: Optional[str] = None,
-                   adapter_config: Optional[Dict[str, Any]] = None,
                    weights: Optional[List[float]] = None) -> Tuple[gpd.GeoDataFrame, str]:
 
-    from .utils import load_network, extract_edges
     from .train import load_model
 
-    # Load the network for the new region
-    G = load_network(new_region, network_type, adapter_type, adapter_config)
-
-    edges = extract_edges(G, adapter_type, adapter_config)
+    G = load_network(new_region, network_type)
+    edges = extract_edges(G)
     logger.info(f"Extracted {len(edges)} edges from {new_region}")
 
     df = edges.copy()
@@ -173,7 +127,6 @@ def apply_ensemble(model_paths: List[str],
             f"Using model {i+1}/{len(model_paths)} trained on {metadata.get('region', 'Unknown')}")
 
         prediction = predict_quality_streets(model, edges, return_all=True)
-
         df['quality_probability'] += weights[i] * \
             prediction['quality_probability']
 
