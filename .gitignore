@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+.DS_Store
 # Distribution / packaging
 dist/
 build/
@@ -30,6 +30,7 @@ models/
 *.csv
 *.png
 output/
+.DS_Store
 
 # Logs
 *.log
